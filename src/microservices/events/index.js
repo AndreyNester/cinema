@@ -14,9 +14,29 @@ const TOPICS = {
 };
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
 
-app.get("/health", (req, res) => res.status(200).send("ok"));
+// ВАЖНО: чтобы не получать 400 на не-JSON/пустом теле
+// Разрешаем и JSON, и пустое тело, и text — потом сами разрулим.
+app.use(express.json({ limit: "1mb", strict: false }));
+app.use(express.text({ type: "*/*", limit: "1mb" }));
+
+function safeParseBody(req) {
+  // Если пришёл JSON — express.json положит объект
+  if (req.body && typeof req.body === "object") return req.body;
+
+  // Если пришёл text/plain или что-то странное — попробуем распарсить как JSON
+  if (typeof req.body === "string" && req.body.trim() !== "") {
+    try {
+      return JSON.parse(req.body);
+    } catch {
+      // не JSON — сохраним как строку
+      return { raw: req.body };
+    }
+  }
+
+  // Если тело пустое — ок, вернём пустой объект
+  return {};
+}
 
 const kafka = new Kafka({
   clientId: "cinemaabyss-events-service",
@@ -34,12 +54,16 @@ function makeEnvelope(type, payload) {
   };
 }
 
+// --- Health check, как требуют тесты
+app.get("/api/events/health", (req, res) => {
+  res.status(200).json({ status: true });
+});
+
 function makeHandler(type) {
   const topic = TOPICS[type];
   return async (req, res) => {
     try {
-      // Любой JSON из тела считаем payload
-      const payload = req.body;
+      const payload = safeParseBody(req);
       const envelope = makeEnvelope(type, payload);
 
       await producer.send({
@@ -52,20 +76,20 @@ function makeHandler(type) {
         ],
       });
 
-      res.status(202).json({ status: "queued" });
+      // Как требуют тесты:
+      res.status(201).json({ status: "success" });
     } catch (e) {
       console.error("Kafka produce error:", e);
-      res.status(502).json({ error: "kafka_write_failed" });
+      res.status(500).json({ status: "error" });
     }
   };
 }
 
+app.post("/api/events/movie", makeHandler("movie"));
 app.post("/api/events/user", makeHandler("user"));
 app.post("/api/events/payment", makeHandler("payment"));
-app.post("/api/events/movie", makeHandler("movie"));
 
 async function startConsumers() {
-  // Один consumer на все топики (можно и по одному — но так проще)
   const consumer = kafka.consumer({ groupId: "cinemaabyss-events-consumer" });
 
   await consumer.connect();
@@ -85,11 +109,9 @@ async function startConsumers() {
 }
 
 async function main() {
-  // producer
   await producer.connect();
   console.log("Producer connected. Brokers:", BROKERS.join(","));
 
-  // consumers
   startConsumers().catch((e) => {
     console.error("Consumer crashed:", e);
     process.exit(1);
@@ -99,7 +121,6 @@ async function main() {
     console.log(`events-service listening on :${PORT}`);
   });
 
-  // graceful shutdown
   const shutdown = async () => {
     console.log("Shutting down...");
     try {

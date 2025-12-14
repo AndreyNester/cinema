@@ -38,53 +38,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---------------------------
-      # 1) Build images locally (no push) — проверяем, что Dockerfile'ы собираются
-      # ---------------------------
-      - name: Build Monolith (local, no push)
-        uses: docker/build-push-action@v4
-        with:
-          context: ./src/monolith
-          push: false
-          load: true
-          tags: monolith:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Movies Service (local, no push)
-        uses: docker/build-push-action@v4
-        with:
-          context: ./src/microservices/movies
-          push: false
-          load: true
-          tags: movies-service:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Proxy Service (local, no push)
-        uses: docker/build-push-action@v4
-        with:
-          context: ./src/microservices/proxy
-          push: false
-          load: true
-          tags: proxy-service:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build Events Service (local, no push)
-        uses: docker/build-push-action@v4
-        with:
-          context: ./src/microservices/events
-          push: false
-          load: true
-          tags: events-service:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # ---------------------------
-      # 2) Run api-tests (docker-compose + newman)
-      # ---------------------------
-      - name: Start postgres first
+      # -------------------------------------------------
+      # 1) Поднимаем инфраструктуру для тестов
+      # -------------------------------------------------
+      - name: Start postgres
         run: |
           docker compose up -d postgres
           docker compose ps
@@ -102,10 +59,10 @@ jobs:
             sleep 2
           done
           echo "Postgres did not become healthy in time"
-          docker compose logs --no-color postgres || true
+          docker compose logs postgres || true
           exit 1
 
-      - name: Start monolith + movies
+      - name: Start monolith and movies
         run: |
           docker compose up -d monolith movies-service
           docker compose ps
@@ -115,7 +72,7 @@ jobs:
           docker compose up -d proxy-service
           docker compose ps
 
-      - name: Wait for gateway to respond (/api/movies)
+      - name: Wait for gateway (/api/movies)
         run: |
           set -e
           for i in {1..120}; do
@@ -126,64 +83,58 @@ jobs:
             sleep 2
           done
           echo "Gateway did not become ready in time"
-          docker compose logs --no-color proxy-service monolith movies-service postgres || true
+          docker compose logs proxy-service monolith movies-service postgres || true
           exit 1
 
-      - name: Start events stack (Kafka + events-service)
+      - name: Start events stack
         run: |
           docker compose up -d zookeeper kafka events-service kafka-ui
           docker compose ps
 
-      - name: Set up Node (for newman)
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install newman
-        run: npm i -g newman
-
-      - name: Run Postman api-tests
+      # -------------------------------------------------
+      # 2) Postman API tests — внутри docker-сети
+      # -------------------------------------------------
+      - name: Run Postman api-tests (newman in docker network)
         run: |
           set -e
-          ls -la tests/postman || true
+          ls -la tests/postman
 
           ENV_FILE=""
           if ls tests/postman/*environment*.json >/dev/null 2>&1; then
             ENV_FILE="$(ls tests/postman/*environment*.json | head -n 1)"
             echo "Using env: $ENV_FILE"
-          else
-            echo "No environment file found, running without -e"
           fi
 
-          COLLECTIONS=$(ls tests/postman/*collection*.json 2>/dev/null || true)
-          if [ -z "$COLLECTIONS" ]; then
-            COLLECTIONS=$(ls tests/postman/*.json 2>/dev/null || true)
-          fi
-
-          if [ -z "$COLLECTIONS" ]; then
-            echo "No Postman collections found in tests/postman"
-            exit 1
-          fi
+          COLLECTIONS=$(ls tests/postman/*collection*.json 2>/dev/null || ls tests/postman/*.json)
 
           for c in $COLLECTIONS; do
             echo "Running collection: $c"
             if [ -n "$ENV_FILE" ]; then
-              newman run "$c" -e "$ENV_FILE"
+              docker run --rm \
+                --network cinemaabyss-network \
+                -v "${PWD}/tests/postman:/etc/newman" \
+                postman/newman:alpine \
+                run "/etc/newman/$(basename "$c")" \
+                -e "/etc/newman/$(basename "$ENV_FILE")"
             else
-              newman run "$c"
+              docker run --rm \
+                --network cinemaabyss-network \
+                -v "${PWD}/tests/postman:/etc/newman" \
+                postman/newman:alpine \
+                run "/etc/newman/$(basename "$c")"
             fi
           done
 
       - name: Stop services
         if: always()
         run: |
-          docker compose logs --no-color || true
+          docker compose logs || true
           docker compose down -v
 
-      # ---------------------------
-      # 3) Only if tests are green — build & push to GHCR
-      # ---------------------------
-      - name: Extract metadata (tags, labels) for Monolith
+      # -------------------------------------------------
+      # 3) Build & Push (только если тесты зелёные)
+      # -------------------------------------------------
+      - name: Extract metadata (Monolith)
         id: meta-monolith
         uses: docker/metadata-action@v4
         with:
@@ -193,17 +144,15 @@ jobs:
             type=ref,event=branch
             latest
 
-      - name: Build and push Monolith Docker image
+      - name: Build and push Monolith
         uses: docker/build-push-action@v4
         with:
           context: ./src/monolith
           push: true
           tags: ${{ steps.meta-monolith.outputs.tags }}
           labels: ${{ steps.meta-monolith.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      - name: Extract metadata (tags, labels) for Movies Service
+      - name: Extract metadata (Movies)
         id: meta-movies
         uses: docker/metadata-action@v4
         with:
@@ -213,17 +162,15 @@ jobs:
             type=ref,event=branch
             latest
 
-      - name: Build and push Movies Service Docker image
+      - name: Build and push Movies Service
         uses: docker/build-push-action@v4
         with:
           context: ./src/microservices/movies
           push: true
           tags: ${{ steps.meta-movies.outputs.tags }}
           labels: ${{ steps.meta-movies.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      - name: Extract metadata (tags, labels) for Proxy Service
+      - name: Extract metadata (Proxy)
         id: meta-proxy
         uses: docker/metadata-action@v4
         with:
@@ -233,17 +180,15 @@ jobs:
             type=ref,event=branch
             latest
 
-      - name: Build and push Proxy Service Docker image
+      - name: Build and push Proxy Service
         uses: docker/build-push-action@v4
         with:
           context: ./src/microservices/proxy
           push: true
           tags: ${{ steps.meta-proxy.outputs.tags }}
           labels: ${{ steps.meta-proxy.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      - name: Extract metadata (tags, labels) for Events Service
+      - name: Extract metadata (Events)
         id: meta-events
         uses: docker/metadata-action@v4
         with:
@@ -253,12 +198,10 @@ jobs:
             type=ref,event=branch
             latest
 
-      - name: Build and push Events Service Docker image
+      - name: Build and push Events Service
         uses: docker/build-push-action@v4
         with:
           context: ./src/microservices/events
           push: true
           tags: ${{ steps.meta-events.outputs.tags }}
           labels: ${{ steps.meta-events.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max

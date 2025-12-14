@@ -91,14 +91,32 @@ jobs:
 
       - name: Wait for gateway to be ready
         run: |
-          for i in {1..60}; do
-            if curl -fsS http://localhost:8000/health >/dev/null 2>&1; then
-              echo "Gateway is ready"
-              exit 0
-            fi
+          set -e
+
+          echo "=== docker compose ps ==="
+          docker compose ps
+
+          endpoints=(
+            "http://localhost:8000/health"
+            "http://localhost:8000/api/health"
+            "http://localhost:8000/healthz"
+            "http://localhost:8000/api/movies"
+          )
+
+          for i in {1..90}; do
+            for e in "${endpoints[@]}"; do
+              if curl -fsS "$e" >/dev/null 2>&1; then
+                echo "Gateway is ready via $e"
+                exit 0
+              fi
+            done
             sleep 2
           done
+
           echo "Gateway did not become ready in time"
+          echo "=== docker compose ps ==="
+          docker compose ps || true
+          echo "=== docker compose logs ==="
           docker compose logs --no-color || true
           exit 1
 

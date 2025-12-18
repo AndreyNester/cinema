@@ -25,7 +25,7 @@ spec:
             - configMapRef:
                 name: cinemaabyss-config
             - secretRef:
-                name: cinemaabyss-secret
+                name: cinemaabyss-secrets
 ---
 apiVersion: v1
 kind: Service

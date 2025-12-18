@@ -3,7 +3,9 @@ kind: Ingress
 metadata:
   name: cinemaabyss-ingress
   namespace: cinemaabyss
+  
 spec:
+  ingressClassName: nginx
   rules:
     - host: cinemaabyss.example.com
       http:

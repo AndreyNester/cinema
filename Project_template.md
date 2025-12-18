@@ -21,8 +21,8 @@
 
 # Задание 3
 
-- вывода при вызове https://cinemaabyss.example.com/api/movies : [ссылка на файл](./docs/list.jpg)
-- вывода event-service после вызова тестов : [ссылка на файл](./docs/event-logs.jpg)
+- вывод при вызове https://cinemaabyss.example.com/api/movies : [ссылка на файл](./docs/list.jpg)
+- вывод event-service после вызова тестов : [ссылка на файл](./docs/event-logs.jpg)
 
 # Задание 4
 

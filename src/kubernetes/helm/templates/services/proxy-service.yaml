@@ -29,7 +29,7 @@ spec:
       {{- end }}
       containers:
         - name: proxy-service
-          image: "{{ .Values.proxyService.image.repository }}:{{ .Values.proxyService.image.tag }}"
+          image: {{ .Values.proxyService.image.repository }}:{{ .Values.proxyService.image.tag }}
           imagePullPolicy: {{ .Values.proxyService.image.pullPolicy }}
           ports:
             - containerPort: {{ .Values.proxyService.service.targetPort }}

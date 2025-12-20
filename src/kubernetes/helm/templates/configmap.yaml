@@ -20,3 +20,34 @@ data:
   # Strangler Fig configuration
   GRADUAL_MIGRATION: {{ .Values.config.gradualMigration | quote }}
   MOVIES_MIGRATION_PERCENT: {{ .Values.config.moviesMigrationPercent | quote }}
+  
+  kong.yml: |
+    _format_version: "3.0"
+    
+    upstreams:
+      - name: movies_upstream
+        targets:
+          - target: movies-service:8081
+            weight: {{ .Values.config.moviesMigrationPercent | quote }}
+          - target: monolith:8080
+            weight: {{ sub 100 .Values.config.moviesMigrationPercent }}
+    
+    services:
+      - name: movies-gateway
+        host: movies_upstream
+        port: 80
+        protocol: http
+        routes:
+          - name: movies-route
+            paths:
+              - /api/movies
+            strip_path: false
+    
+      # всё остальное -> монолит
+      - name: monolith-gateway
+        url: http://monolith:8080
+        routes:
+          - name: monolith-route
+            paths:
+              - /
+            strip_path: false

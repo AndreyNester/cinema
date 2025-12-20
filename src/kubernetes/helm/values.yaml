@@ -183,4 +183,4 @@ ingress:
 config:
   # Strangler Fig configuration
   gradualMigration: "true"
-  moviesMigrationPercent: 75
+  moviesMigrationPercent: 50

@@ -1,0 +1,121 @@
+@startuml
+skinparam linetype ortho
+skinparam ranksep 200
+'skinparam nodesep 80
+
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+LAYOUT_TOP_DOWN()
+
+title C4 Container: Кинобездна
+
+Person(user, "Пользователь", "Смотрит контент, управляет избранным, оформляет подписку.")
+Person(admin, "Админ/контент-менеджер", "Управляет каталогом, метаданными, акциями.")
+
+System_Boundary(cin, "Кинобездна") {
+
+  Boundary(clients, "Clients") {
+    Container(web, "Web Client", "SPA/Browser", "UI для пользователей.")
+    Container(mobile, "Mobile App", "iOS/Android", "UI для пользователей.")
+    Container(tv, "Smart TV App", "TV", "UI для пользователей.")
+    Container(adminui, "Admin UI", "Web", "UI для админов.")
+  }
+
+  Boundary(bff, "BFF / API Composition") {
+    Container(bff_web, "BFF Web API", "Backend-for-Frontend", "Агрегирует данные под Web.")
+    Container(bff_mobile, "BFF Mobile API", "Backend-for-Frontend", "Агрегирует данные под Mobile.")
+    Container(bff_tv, "BFF TV API", "Backend-for-Frontend", "Агрегирует данные под Smart TV.")
+  }
+
+  Boundary(services, "Microservices") {
+    Container(identity, "Identity & Access Service", "Microservice", "Аутентификация/авторизация, токены, профили.")
+    Container(catalog, "Content Catalog Service", "Microservice", "Каталог доступного контента: наличие, доступность, связи с внешним провайдером.")
+    Container(metadata, "Metadata Service", "Microservice", "Жанры/актеры/теги/описания и прочая мета-информация.")
+    Container(subscription, "Subscription Service", "Microservice", "Планы/подписки/entitlements пользователя.")
+    Container(billing, "Billing & Payments Service", "Microservice", "Инвойсы/платежи/статусы/возвраты, интеграция с платежкой.")
+    Container(promotions, "Promotions Service", "Microservice", "Промокоды/скидки/правила применимости.")
+    Container(engagement, "User Engagement Service", "Microservice", "Избранное/оценки/лайки/закладки, user actions.")
+    Container(reco_adapter, "Recommendations Adapter", "Microservice", "Фасад к внешней рекомендательной системе (кэш/контракты).")
+  }
+
+  Boundary(data, "Data Stores & Infra") {
+    ContainerQueue(kafka, "Event Bus", "Kafka (MVP)", "Асинхронные события: просмотры, оценки, изменения подписок и т.п.")
+
+    ContainerDb(db_identity, "Identity DB", "PostgreSQL", "Пользователи/креды/сессии.")
+    ContainerDb(db_catalog, "Catalog DB", "PostgreSQL", "Сущности каталога и доступность.")
+    ContainerDb(db_metadata, "Metadata DB", "PostgreSQL", "Метаданные фильмов/справочники.")
+    ContainerDb(db_subscription, "Subscription DB", "PostgreSQL", "Подписки/планы/entitlements.")
+    ContainerDb(db_billing, "Billing DB", "PostgreSQL", "Платежи/инвойсы/транзакции.")
+    ContainerDb(db_promotions, "Promotions DB", "PostgreSQL", "Акции/промокоды/правила.")
+    ContainerDb(db_engagement, "Engagement DB", "PostgreSQL", "Избранное/оценки/события.")
+    ContainerDb(db_reco_cache, "Recommendations Cache", "Redis", "Кэш рекомендаций/подборок.")
+  }
+}
+
+' --- External Systems
+System_Ext(streaming, "Внешний стриминг/видеохостинг", "Хранит/раздает видео.")
+System_Ext(reco_ext, "Внешняя рекомендательная система", "Считает рекомендации.")
+System_Ext(pay_ext, "Платежный провайдер", "Процессинг платежей + webhooks.")
+
+' --- Client -> BFF
+Rel(user, web, "Пользуется", "")
+Rel(user, mobile, "Пользуется", "")
+Rel(user, tv, "Пользуется", "")
+Rel(admin, adminui, "Пользуется", "")
+
+Rel(web, bff_web, "HTTP", "JSON/HTTPS")
+Rel(mobile, bff_mobile, "HTTP", "JSON/HTTPS")
+Rel(tv, bff_tv, "HTTP", "JSON/HTTPS")
+Rel(adminui, bff_web, "HTTP", "JSON/HTTPS")
+
+' --- BFF -> Services (синхронные вызовы)
+Rel(bff_web, identity, "Проверка токена/профиль", "HTTPS/JSON")
+Rel(bff_web, catalog, "Каталог/доступность", "HTTPS/JSON")
+Rel(bff_web, metadata, "Метаданные карточки", "HTTPS/JSON")
+Rel(bff_web, engagement, "Избранное/оценки", "HTTPS/JSON")
+Rel(bff_web, subscription, "Статус подписки/entitlements", "HTTPS/JSON")
+Rel(bff_web, reco_adapter, "Рекомендации", "HTTPS/JSON")
+
+Rel(bff_mobile, identity, "Auth", "HTTPS/JSON")
+Rel(bff_mobile, catalog, "Каталог", "HTTPS/JSON")
+Rel(bff_mobile, metadata, "Метаданные", "HTTPS/JSON")
+Rel(bff_mobile, engagement, "Избранное/оценки", "HTTPS/JSON")
+Rel(bff_mobile, subscription, "Подписка", "HTTPS/JSON")
+Rel(bff_mobile, reco_adapter, "Рекомендации", "HTTPS/JSON")
+
+Rel(bff_tv, identity, "Auth/Device session", "HTTPS/JSON")
+Rel(bff_tv, catalog, "Каталог", "HTTPS/JSON")
+Rel(bff_tv, metadata, "Метаданные", "HTTPS/JSON")
+Rel(bff_tv, engagement, "Продолжить/избранное", "HTTPS/JSON")
+Rel(bff_tv, subscription, "Entitlements", "HTTPS/JSON")
+Rel(bff_tv, reco_adapter, "Рекомендации", "HTTPS/JSON")
+
+' --- Subscription purchase flow
+Rel(bff_web, billing, "Создать оплату/инвойс", "HTTPS/JSON")
+Rel(bff_web, promotions, "Проверить промокод/скидку", "HTTPS/JSON")
+Rel(billing, pay_ext, "Провести платеж", "HTTPS/API")
+Rel(pay_ext, billing, "Статус платежа (webhook)", "HTTPS/Webhook")
+Rel(billing, subscription, "Активировать/продлить подписку", "HTTPS/JSON")
+
+Rel(billing, kafka, "Публикует PaymentSucceeded/Failed", "")
+Rel(subscription, kafka, "Публикует SubscriptionActivated/Expired", "")
+Rel(engagement, kafka, "Публикует RatingSet/FavoriteAdded", "")
+
+' --- Recommendations integration
+Rel(reco_adapter, reco_ext, "Запросить рекомендации", "HTTPS/API")
+Rel(reco_adapter, db_reco_cache, "Кэширует подборки", "Redis")
+
+' --- Streaming integration (воспроизведение)
+Rel(bff_web, streaming, "Получить playback URL/токен", "HTTPS/API")
+Rel(bff_mobile, streaming, "Получить playback URL/токен", "HTTPS/API")
+Rel(bff_tv, streaming, "Получить playback URL/токен", "HTTPS/API")
+
+' --- Service -> DB
+Rel(identity, db_identity, "CRUD", "")
+Rel(catalog, db_catalog, "CRUD", "")
+Rel(metadata, db_metadata, "CRUD", "")
+Rel(subscription, db_subscription, "CRUD", "")
+Rel(billing, db_billing, "CRUD", "")
+Rel(promotions, db_promotions, "CRUD", "")
+Rel(engagement, db_engagement, "CRUD", "")
+
+@enduml

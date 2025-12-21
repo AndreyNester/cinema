@@ -3,10 +3,12 @@ name: Docker Build and Push
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
-      - 'src/**'
-      - '.github/workflows/docker-build-push.yml'
+      - "src/**"
+      - ".github/workflows/docker-build-push.yml"
+  pull_request:
+    branches: [main, cinema]
   release:
     types: [published]
 
@@ -38,48 +40,170 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels) for Monolith
+      # -------------------------------------------------
+      # 1) Поднимаем инфраструктуру для тестов
+      # -------------------------------------------------
+      - name: Start postgres
+        run: |
+          docker compose up -d postgres
+          docker compose ps
+
+      - name: Wait for postgres healthcheck
+        run: |
+          set -e
+          for i in {1..120}; do
+            status="$(docker inspect -f '{{.State.Health.Status}}' cinemaabyss-postgres 2>/dev/null || true)"
+            echo "postgres health: $status"
+            if [ "$status" = "healthy" ]; then
+              echo "Postgres is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Postgres did not become healthy in time"
+          docker compose logs postgres || true
+          exit 1
+
+      - name: Start monolith and movies
+        run: |
+          docker compose up -d monolith movies-service
+          docker compose ps
+
+      - name: Start proxy (API Gateway)
+        run: |
+          docker compose up -d proxy-service
+          docker compose ps
+
+      - name: Wait for gateway (/api/movies)
+        run: |
+          set -e
+          for i in {1..120}; do
+            if curl -fsS http://localhost:8000/api/movies >/dev/null 2>&1; then
+              echo "Gateway is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Gateway did not become ready in time"
+          docker compose logs proxy-service monolith movies-service postgres || true
+          exit 1
+
+      - name: Start events stack
+        run: |
+          docker compose up -d zookeeper kafka events-service kafka-ui
+          docker compose ps
+
+      # -------------------------------------------------
+      # 2) Postman API tests — внутри docker-сети
+      # -------------------------------------------------
+      - name: Run Postman api-tests (newman in docker network)
+        run: |
+          set -e
+          ls -la tests/postman
+
+          ENV_FILE=""
+          if ls tests/postman/*environment*.json >/dev/null 2>&1; then
+            ENV_FILE="$(ls tests/postman/*environment*.json | head -n 1)"
+            echo "Using env: $ENV_FILE"
+          fi
+
+          COLLECTIONS=$(ls tests/postman/*collection*.json 2>/dev/null || ls tests/postman/*.json)
+
+          for c in $COLLECTIONS; do
+            echo "Running collection: $c"
+            if [ -n "$ENV_FILE" ]; then
+              docker run --rm \
+                --network cinemaabyss-network \
+                -v "${PWD}/tests/postman:/etc/newman" \
+                postman/newman:alpine \
+                run "/etc/newman/$(basename "$c")" \
+                -e "/etc/newman/$(basename "$ENV_FILE")"
+            else
+              docker run --rm \
+                --network cinemaabyss-network \
+                -v "${PWD}/tests/postman:/etc/newman" \
+                postman/newman:alpine \
+                run "/etc/newman/$(basename "$c")"
+            fi
+          done
+
+      - name: Stop services
+        if: always()
+        run: |
+          docker compose logs || true
+          docker compose down -v
+
+      # -------------------------------------------------
+      # 3) Build & Push (только если тесты зелёные)
+      # -------------------------------------------------
+      - name: Extract metadata (Monolith)
         id: meta-monolith
         uses: docker/metadata-action@v4
         with:
           images: ${{ env.REGISTRY }}/${{ env.MONOLITH_IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
             type=ref,event=branch
             latest
 
-      - name: Build and push Monolith Docker image
+      - name: Build and push Monolith
         uses: docker/build-push-action@v4
         with:
           context: ./src/monolith
           push: true
           tags: ${{ steps.meta-monolith.outputs.tags }}
           labels: ${{ steps.meta-monolith.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      - name: Extract metadata (tags, labels) for Movies Service
+      - name: Extract metadata (Movies)
         id: meta-movies
         uses: docker/metadata-action@v4
         with:
           images: ${{ env.REGISTRY }}/${{ env.MOVIES_SERVICE_IMAGE_NAME }}
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
             type=ref,event=branch
             latest
 
-      - name: Build and push Movies Service Docker image
+      - name: Build and push Movies Service
         uses: docker/build-push-action@v4
         with:
           context: ./src/microservices/movies
           push: true
           tags: ${{ steps.meta-movies.outputs.tags }}
           labels: ${{ steps.meta-movies.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
-      
+      - name: Extract metadata (Proxy)
+        id: meta-proxy
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.PROXY_SERVICE_IMAGE_NAME }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            latest
+
+      - name: Build and push Proxy Service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./src/microservices/proxy
+          push: true
+          tags: ${{ steps.meta-proxy.outputs.tags }}
+          labels: ${{ steps.meta-proxy.outputs.labels }}
+
+      - name: Extract metadata (Events)
+        id: meta-events
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.EVENTS_SERVICE_IMAGE_NAME }}
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            latest
+
+      - name: Build and push Events Service
+        uses: docker/build-push-action@v4
+        with:
+          context: ./src/microservices/events
+          push: true
+          tags: ${{ steps.meta-events.outputs.tags }}
+          labels: ${{ steps.meta-events.outputs.labels }}
